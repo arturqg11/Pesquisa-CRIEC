@@ -14,6 +14,5 @@ Este projeto busca centralizar e automatizar a extração de dados públicos do 
 
 * **Python 3.x**
 * **Requests** (Download de arquivos)
-* **Pandas / Numpy* (Manipulação e leitura dos dados)
-
+* **Pandas / Numpy** 
 ---
