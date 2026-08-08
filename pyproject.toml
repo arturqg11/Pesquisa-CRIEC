@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pesquisa-criec"
+version = "0.1.0"
+description = "Pipeline de automações para processamento de dados GOES/CRIEC"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "pystac-client",
+    "numpy",
+    "xarray",
+    "matplotlib",
+    "netCDF4",
+]

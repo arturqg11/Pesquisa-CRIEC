@@ -1,0 +1,6 @@
+requests
+pystac-client
+numpy
+xarray
+matplotlib
+netCDF4

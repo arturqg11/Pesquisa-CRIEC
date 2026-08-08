@@ -8,9 +8,30 @@ import uuid
 
 import numpy as np
 import xarray as xr
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # Funções
+
+def gerar_png_do_dataset(ds, path_nc: str) -> str:
+    """Gera um PNG a partir de um dataset xarray já carregado em memória."""
+
+    if "CMI" in ds.data_vars:
+        var_name = "CMI"
+    else:
+        var_name = next(iter(ds.data_vars), None)
+
+    if var_name is None:
+        raise ValueError(f"Nenhuma variável de imagem encontrada em {path_nc}")
+
+    plt.figure(figsize=(8, 8))
+    plt.imshow(ds[var_name])
+    png_path = path_nc.replace('.nc', '.png')
+    plt.savefig(png_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    return png_path
+
 def baixar_banda_goes(
     banda: str,
     datetime_str: str,
@@ -187,7 +208,8 @@ def baixar_roi_goes(
     lat_max: float = -26.0,
     lon_min: float = -62.0,
     lon_max: float = -46.0,
-    output_dir: str = "dados_goes_roi"
+    output_dir: str = "dados_goes_roi",
+    png: bool = False
 ) -> list[str]:
     """Lê os arquivos baixados do GOES-19, recorta a área de interesse usando xarray,
     salva os arquivos resultantes no diretório de saída e apaga os originais.
@@ -202,6 +224,7 @@ def baixar_roi_goes(
         lon_max (float, optional): Longitude máxima em graus decimais. Padrão é -46.0.
         output_dir (str, optional): Diretório local onde os arquivos recortados (.nc) 
             serão armazenados. Criado automaticamente caso não exista. Padrão é 'dados_goes_roi'.
+        png (bool, optional): Se True, gera imagens PNG dos recortes. Padrão é False.
 
     Returns:
         list[str]: Lista contendo os caminhos locais dos arquivos NetCDF recortados.
@@ -213,7 +236,8 @@ def baixar_roi_goes(
     Example:
         >>> arquivos_recortados = baixar_roi_goes(
         ...     banda="B14",
-        ...     datetime_str="2026-06-01T14:30:00Z"
+        ...     datetime_str="2026-06-01T14:30:00Z",
+        ...     png=True
         ... )
         >>> print(arquivos_recortados)
         ['dados_goes_roi/crop_GOES19_CMI_..._B14.nc']
@@ -302,6 +326,13 @@ def baixar_roi_goes(
             except Exception:
                 pass
             os.replace(tmp_dest, path_destino)
+
+            if png:
+                try:
+                    png_path = gerar_png_do_dataset(ds_cropped, path_destino)
+                    print(f"Imagem PNG gerada: {png_path}")
+                except Exception as e:
+                    print(f"Aviso: falha ao gerar PNG para {path_destino}: {e}")
 
             ds_cropped.close()
             print(f"Arquivo recortado salvo em: {path_destino}")
