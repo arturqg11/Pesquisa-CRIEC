@@ -5,12 +5,16 @@ from pystac_client import Client
 import shutil
 import tempfile
 import uuid
+import concurrent.futures
+import threading
 
 import numpy as np
 import xarray as xr
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+_NETCDF_LOCK = threading.Lock()
 
 # Funções
 
@@ -32,10 +36,40 @@ def gerar_png_do_dataset(ds, path_nc: str) -> str:
     plt.close()
     return png_path
 
+def buscar_itens_goes(
+    datetime_str: str,
+    collection: str = "GOES19-L2-CMI-1"
+) -> list:
+    """Consulta a STAC API do INPE uma única vez e retorna os itens encontrados.
+
+    O resultado da busca depende apenas do intervalo de tempo (e da coleção),
+    não da banda espectral. Centralizar a busca aqui permite reaproveitar os
+    mesmos itens ao processar várias bandas (ver `roi_mbanda`), evitando
+    repetir a mesma consulta à API STAC uma vez por banda.
+
+    Args:
+        datetime_str (str): Data/hora única em ISO 8601 (AAAA-MM-DDTHH:MM:SSZ) ou intervalo temporal.
+        collection (str, optional): Coleção STAC a consultar. Padrão é 'GOES19-L2-CMI-1'.
+
+    Returns:
+        list: Itens (pystac.Item) encontrados no catálogo.
+    """
+    api_url = "https://data.inpe.br/bdc/stac/v1/"
+    print(f"Conectando à STAC API: {api_url}")
+    client = Client.open(api_url)
+
+    print(f"Buscando dados para a coleção '{collection}'...")
+    search = client.search(collections=[collection], datetime=datetime_str)
+
+    items = list(search.items())
+    print(f"Total de registros encontrados: {len(items)}")
+    return items
+
 def baixar_banda_goes(
     banda: str,
     datetime_str: str,
-    output_dir: str = "dados_goes"
+    output_dir: str = "dados_goes",
+    items: list | None = None
 ) -> list[str]:
     """Busca e realiza o download dos dados em NetCDF do GOES-19 na STAC API do INPE.
 
@@ -51,6 +85,9 @@ def baixar_banda_goes(
             Exemplos: '2026-06-01T14:30:00Z' ou '2026-06-01T14:00:00Z/2026-06-01T15:00:00Z'.
         output_dir (str, optional): Diretório local onde os arquivos NetCDF (.nc) 
             serão armazenados. Criado automaticamente caso não exista. Padrão é 'dados_goes'.
+        items (list, optional): Itens STAC já resolvidos (de `buscar_itens_goes`). Se
+            None, a função faz a própria busca. Passar itens prontos evita repetir a
+            consulta à API quando várias bandas do mesmo intervalo são processadas.
 
     Returns:
         list[str]: Lista contendo os caminhos locais de todos os arquivos baixados 
@@ -70,20 +107,10 @@ def baixar_banda_goes(
         ['./dados_goes/GOES19_CMI_..._B14.nc']
     """
     os.makedirs(output_dir, exist_ok=True)
-    
-    api_url = "https://data.inpe.br/bdc/stac/v1/"
-    print(f"Conectando à STAC API: {api_url}")
-    client = Client.open(api_url)
-    
-    print("Buscando dados para a coleção 'GOES19-L2-CMI-1'...")
-    search = client.search(
-        collections=["GOES19-L2-CMI-1"],
-        datetime=datetime_str
-    )
-    
-    items = list(search.items())
-    print(f"Total de registros encontrados: {len(items)}")
-    
+
+    if items is None:
+        items = buscar_itens_goes(datetime_str)
+
     if len(items) == 0:
         print("Nenhuma imagem encontrada para os parâmetros informados.")
         return []
@@ -113,12 +140,12 @@ def baixar_banda_goes(
             print(f"Baixando de: {file_url}")
             print(f"Salvando em: {file_path}...")
             
-            response = requests.get(file_url, stream=True)
+            response = requests.get(file_url, stream=True, timeout=(10, 300))
             if response.status_code == 200:
                 # garante que o diretório existe antes de escrever
                 os.makedirs(os.path.dirname(file_path), exist_ok=True)
                 with open(file_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192):
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
                         if chunk:
                             f.write(chunk)
                 # confirma que o arquivo foi escrito no disco e usa caminho absoluto
@@ -209,10 +236,15 @@ def baixar_roi_goes(
     lon_min: float = -62.0,
     lon_max: float = -46.0,
     output_dir: str = "dados_goes_roi",
-    png: bool = False
+    png: bool = False,
+    items: list | None = None
 ) -> list[str]:
     """Lê os arquivos baixados do GOES-19, recorta a área de interesse usando xarray,
     salva os arquivos resultantes no diretório de saída e apaga os originais.
+
+    Itens cujo recorte final já exista em `output_dir` são pulados automaticamente
+    (nem chegam a ser baixados novamente), o que torna reexecuções do pipeline
+    incrementais em vez de rebaixar tudo do zero.
 
     Args:
         banda (str): Identificador do asset/banda desejada (ex: 'B01' a 'B16').
@@ -225,6 +257,10 @@ def baixar_roi_goes(
         output_dir (str, optional): Diretório local onde os arquivos recortados (.nc) 
             serão armazenados. Criado automaticamente caso não exista. Padrão é 'dados_goes_roi'.
         png (bool, optional): Se True, gera imagens PNG dos recortes. Padrão é False.
+        items (list, optional): Itens STAC já resolvidos (de `buscar_itens_goes`). Se
+            None, a função faz a própria busca. Passar itens prontos evita repetir a
+            consulta à API quando várias bandas do mesmo intervalo são processadas
+            (ver `roi_mbanda`).
 
     Returns:
         list[str]: Lista contendo os caminhos locais dos arquivos NetCDF recortados.
@@ -243,9 +279,33 @@ def baixar_roi_goes(
         ['dados_goes_roi/crop_GOES19_CMI_..._B14.nc']
     """
     temp_dir = os.path.join(output_dir, "temp_downloads")
-    
-    # 1. Faz o download dos arquivos brutos na pasta temporária
-    arquivos_baixados = baixar_banda_goes(banda, datetime_str, output_dir=temp_dir)
+    os.makedirs(output_dir, exist_ok=True)
+    arquivos_recortados = []
+
+    # 0. Resolve os itens STAC (reaproveita se já vierem prontos de roi_mbanda)
+    if items is None:
+        items = buscar_itens_goes(datetime_str)
+
+    # 0.1 Pula itens cujo recorte final já existe em disco: evita baixar de novo
+    #     um arquivo bruto que já foi processado em uma execução anterior.
+    itens_pendentes = []
+    for item in items:
+        if banda not in item.assets:
+            continue
+        nome_bruto = f"{item.id}_{banda}.nc"
+        path_destino = os.path.join(output_dir, f"crop_{nome_bruto}")
+        if os.path.exists(path_destino):
+            print(f"Recorte já existe, pulando download: {path_destino}")
+            arquivos_recortados.append(path_destino)
+        else:
+            itens_pendentes.append(item)
+
+    if not itens_pendentes:
+        print("Todos os recortes já existem em disco. Nada para baixar.")
+        return arquivos_recortados
+
+    # 1. Faz o download apenas dos arquivos brutos que ainda faltam
+    arquivos_baixados = baixar_banda_goes(banda, datetime_str, output_dir=temp_dir, items=itens_pendentes)
     
     # Normaliza para caminhos absolutos e confirma existência em disco
     arquivos_baixados = [os.path.abspath(p) for p in arquivos_baixados]
@@ -253,13 +313,10 @@ def baixar_roi_goes(
     arquivos_baixados = [p for p in arquivos_baixados if os.path.exists(p)]
     if not arquivos_baixados:
         print("Nenhum arquivo baixado para recortar (nenhum arquivo encontrado no disco).")
-        return []
+        return arquivos_recortados
 
     # 2. Obtém os limites em radianos da Fixed Grid (x, y)
     x_min, x_max, y_min, y_max = conver_coord(lat_min, lat_max, lon_min, lon_max)
-    
-    os.makedirs(output_dir, exist_ok=True)
-    arquivos_recortados = []
 
     # 3. Processa, recorta e apaga cada arquivo original
     for path_original in arquivos_baixados:
@@ -271,22 +328,28 @@ def baixar_roi_goes(
 
         print(f"\nRecortando o arquivo: {nome_arquivo}")
         
-        # Abre e carrega na memória para liberar o arquivo original imediatamente
+        # Abre e carrega na memória para liberar o arquivo original imediatamente.
+        # Por padrão abre o arquivo original diretamente (sem cópia extra); só cai
+        # para um caminho temporário ASCII se a abertura falhar por causa de
+        # caracteres especiais no caminho (problema conhecido no Windows).
+        tmp_path = path_original
         try:
-            # Copia para um caminho temporário ASCII (evita problemas com caracteres Unicode no caminho no Windows)
-            tmp_name = f"goes_tmp_{uuid.uuid4().hex}_{nome_arquivo}"
-            tmp_path = os.path.join(tempfile.gettempdir(), tmp_name)
             try:
+                with _NETCDF_LOCK, xr.open_dataset(path_original) as ds:
+                    if ds.y[0] > ds.y[-1]:
+                        ds_cropped = ds.sel(x=slice(x_min, x_max), y=slice(y_max, y_min)).load()
+                    else:
+                        ds_cropped = ds.sel(x=slice(x_min, x_max), y=slice(y_min, y_max)).load()
+            except (UnicodeDecodeError, OSError) as e_open:
+                print(f"Aviso: falha ao abrir {path_original} diretamente ({e_open}). Copiando para caminho temporário ASCII.")
+                tmp_name = f"goes_tmp_{uuid.uuid4().hex}_{nome_arquivo}"
+                tmp_path = os.path.join(tempfile.gettempdir(), tmp_name)
                 shutil.copy2(path_original, tmp_path)
-            except Exception as e_copy:
-                print(f"Aviso: falha ao copiar {path_original} para tmp ({e_copy}). Tentando abrir original.")
-                tmp_path = path_original
-
-            with xr.open_dataset(tmp_path) as ds:
-                if ds.y[0] > ds.y[-1]:
-                    ds_cropped = ds.sel(x=slice(x_min, x_max), y=slice(y_max, y_min)).load()
-                else:
-                    ds_cropped = ds.sel(x=slice(x_min, x_max), y=slice(y_min, y_max)).load()
+                with _NETCDF_LOCK, xr.open_dataset(tmp_path) as ds:
+                    if ds.y[0] > ds.y[-1]:
+                        ds_cropped = ds.sel(x=slice(x_min, x_max), y=slice(y_max, y_min)).load()
+                    else:
+                        ds_cropped = ds.sel(x=slice(x_min, x_max), y=slice(y_min, y_max)).load()
         except FileNotFoundError:
             print(f"Aviso: arquivo não encontrado ao abrir: {path_original}. Pulando.")
             # tenta remover o arquivo temporário se foi criado
@@ -317,7 +380,8 @@ def baixar_roi_goes(
             tmp_dest_name = f"crop_tmp_{uuid.uuid4().hex}_{nome_arquivo}"
             tmp_dest = os.path.join(tempfile.gettempdir(), tmp_dest_name)
             # escreve para o temporário (evita problemas com caminhos Unicode no Windows)
-            ds_cropped.to_netcdf(tmp_dest)
+            with _NETCDF_LOCK:
+                ds_cropped.to_netcdf(tmp_dest)
 
             # substitui destino final de forma atômica
             try:
@@ -366,3 +430,102 @@ def baixar_roi_goes(
         os.rmdir(temp_dir)
 
     return arquivos_recortados
+
+def roi_mbanda(
+    datetime_str: str,
+    bandas: list[str] = ["B01","B02","B03","B04","B05","B06","B07","B08","B09","B10","B11","B12","B13","B14","B15","B16"],
+    lat_min: float = -36.0,
+    lat_max: float = -26.0,
+    lon_min: float = -62.0,
+    lon_max: float = -46.0,
+    output_dir: str = "dados_goes_roi",
+    png: bool = False,
+    max_workers: int = 4
+) -> list[str]:
+    """Baixa e recorta múltiplas bandas espectrais do GOES-19 para a mesma janela
+    de tempo e região de interesse (ROI), organizando a saída em uma subpasta por banda.
+
+    Itens cujo recorte final já exista em disco são pulados automaticamente
+    (nem chegam a ser baixados novamente), o que torna reexecuções do pipeline
+    incrementais em vez de rebaixar tudo do zero. A busca no catálogo STAC é
+    feita uma única vez e reaproveitada entre todas as bandas processadas.
+
+    Args:
+        datetime_str (str): Data/hora única em ISO 8601 (AAAA-MM-DDTHH:MM:SSZ) ou intervalo temporal.
+            Exemplos: '2026-06-01T14:30:00Z' ou '2026-06-01T14:00:00Z/2026-06-01T15:00:00Z'.
+        bandas (list[str], optional): Lista de identificadores de banda a processar
+            (ex: 'B01' a 'B16' para o sensor ABI do GOES). Padrão é todas as 16 bandas.
+        lat_min (float, optional): Latitude mínima em graus decimais. Padrão é -36.0.
+        lat_max (float, optional): Latitude máxima em graus decimais. Padrão é -26.0.
+        lon_min (float, optional): Longitude mínima em graus decimais. Padrão é -62.0.
+        lon_max (float, optional): Longitude máxima em graus decimais. Padrão é -46.0.
+        output_dir (str, optional): Diretório local onde os arquivos recortados (.nc)
+            serão armazenados, em uma subpasta por banda (ex: 'dados_goes_roi/B01').
+            Criado automaticamente caso não exista. Padrão é 'dados_goes_roi'.
+        png (bool, optional): Se True, gera imagens PNG dos recortes. Padrão é False.
+        max_workers (int, optional): Número de bandas processadas em paralelo
+            (download + recorte são operações I/O-bound). Padrão é 4. Aumentar
+            demais pode sobrecarregar a API do INPE; ajuste conforme a
+            estabilidade da rede.
+
+    Returns:
+        list[str]: Lista contendo os caminhos locais de todos os arquivos NetCDF
+            recortados, de todas as bandas processadas.
+
+    Raises:
+        Exception: Em caso de falha de conexão, erro no cliente STAC ou erro na
+            leitura/salvamento via xarray de alguma das bandas.
+
+    Example:
+        >>> arquivos = roi_mbanda(
+        ...     datetime_str="2026-06-01T14:30:00Z",
+        ...     bandas=["B13", "B14"],
+        ...     png=True
+        ... )
+        >>> print(arquivos)
+        ['dados_goes_roi/B13/crop_GOES19_CMI_..._B13.nc', 'dados_goes_roi/B14/crop_GOES19_CMI_..._B14.nc']
+    """
+    if isinstance(bandas, str):
+        bandas_lista = [bandas]
+    else:
+        bandas_lista = list(bandas or [])
+
+    if not bandas_lista:
+        print("Nenhuma banda informada para processamento.")
+        return []
+
+    # Busca os itens STAC uma única vez e reaproveita para todas as bandas: o
+    # resultado da busca não depende da banda, só do intervalo de tempo.
+    items = buscar_itens_goes(datetime_str)
+    if not items:
+        return []
+
+    def _processar_banda(band: str) -> list[str]:
+        # Define um diretório específico para cada banda (ex: dados_goes_roi/B01)
+        pasta_banda = os.path.join(output_dir, band)
+        return baixar_roi_goes(
+            banda=band,
+            datetime_str=datetime_str,
+            lat_min=lat_min,
+            lat_max=lat_max,
+            lon_min=lon_min,
+            lon_max=lon_max,
+            output_dir=pasta_banda,
+            png=png,
+            items=items
+        )
+
+    todos_arquivos = []
+
+    # Download/recorte são operações de I/O (rede + disco), então paralelizar
+    # com threads reduz bastante o tempo total ao processar várias bandas.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futuros = {executor.submit(_processar_banda, band): band for band in bandas_lista}
+        for futuro in concurrent.futures.as_completed(futuros):
+            band = futuros[futuro]
+            try:
+                todos_arquivos.extend(futuro.result())
+            except Exception as e:
+                print(f"Erro ao processar a banda {band}: {e}")
+
+    return todos_arquivos
