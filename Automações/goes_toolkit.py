@@ -231,10 +231,10 @@ def conver_coord(
 def baixar_roi_goes(
     banda: str,
     datetime_str: str,
-    lat_min: float = -36.0,
-    lat_max: float = -26.0,
-    lon_min: float = -62.0,
-    lon_max: float = -46.0,
+    lat_min: float = -20.0,
+    lat_max: float = -40.0,
+    lon_min: float = -70.0,
+    lon_max: float = -40.0,
     output_dir: str = "dados_goes_roi",
     png: bool = False,
     items: list | None = None
@@ -250,10 +250,10 @@ def baixar_roi_goes(
         banda (str): Identificador do asset/banda desejada (ex: 'B01' a 'B16').
         datetime_str (str): Data/hora única em ISO 8601 (AAAA-MM-DDTHH:MM:SSZ) ou intervalo temporal.
             Exemplos: '2026-06-01T14:30:00Z' ou '2026-06-01T14:00:00Z/2026-06-01T15:00:00Z'.
-        lat_min (float, optional): Latitude mínima em graus decimais. Padrão é -36.0.
-        lat_max (float, optional): Latitude máxima em graus decimais. Padrão é -26.0.
-        lon_min (float, optional): Longitude mínima em graus decimais. Padrão é -62.0.
-        lon_max (float, optional): Longitude máxima em graus decimais. Padrão é -46.0.
+        lat_min (float, optional): Latitude mínima em graus decimais. Padrão é -20.0.
+        lat_max (float, optional): Latitude máxima em graus decimais. Padrão é -40.0.
+        lon_min (float, optional): Longitude mínima em graus decimais. Padrão é -70.0.
+        lon_max (float, optional): Longitude máxima em graus decimais. Padrão é -40.0.
         output_dir (str, optional): Diretório local onde os arquivos recortados (.nc) 
             serão armazenados. Criado automaticamente caso não exista. Padrão é 'dados_goes_roi'.
         png (bool, optional): Se True, gera imagens PNG dos recortes. Padrão é False.
@@ -434,10 +434,10 @@ def baixar_roi_goes(
 def roi_mbanda(
     datetime_str: str,
     bandas: list[str] = ["B01","B02","B03","B04","B05","B06","B07","B08","B09","B10","B11","B12","B13","B14","B15","B16"],
-    lat_min: float = -36.0,
-    lat_max: float = -26.0,
-    lon_min: float = -62.0,
-    lon_max: float = -46.0,
+    lat_min: float = -20.0,
+    lat_max: float = -40.0,
+    lon_min: float = -70.0,
+    lon_max: float = -40.0,
     output_dir: str = "dados_goes_roi",
     png: bool = False,
     max_workers: int = 4
@@ -455,10 +455,10 @@ def roi_mbanda(
             Exemplos: '2026-06-01T14:30:00Z' ou '2026-06-01T14:00:00Z/2026-06-01T15:00:00Z'.
         bandas (list[str], optional): Lista de identificadores de banda a processar
             (ex: 'B01' a 'B16' para o sensor ABI do GOES). Padrão é todas as 16 bandas.
-        lat_min (float, optional): Latitude mínima em graus decimais. Padrão é -36.0.
-        lat_max (float, optional): Latitude máxima em graus decimais. Padrão é -26.0.
-        lon_min (float, optional): Longitude mínima em graus decimais. Padrão é -62.0.
-        lon_max (float, optional): Longitude máxima em graus decimais. Padrão é -46.0.
+        lat_min (float, optional): Latitude mínima em graus decimais. Padrão é -20.0.
+        lat_max (float, optional): Latitude máxima em graus decimais. Padrão é -40.0.
+        lon_min (float, optional): Longitude mínima em graus decimais. Padrão é -70.0.
+        lon_max (float, optional): Longitude máxima em graus decimais. Padrão é -40.0.
         output_dir (str, optional): Diretório local onde os arquivos recortados (.nc)
             serão armazenados, em uma subpasta por banda (ex: 'dados_goes_roi/B01').
             Criado automaticamente caso não exista. Padrão é 'dados_goes_roi'.
