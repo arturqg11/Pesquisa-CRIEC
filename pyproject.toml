@@ -12,6 +12,7 @@ dependencies = [
     "pystac-client",
     "numpy",
     "xarray",
+    "scipy",
     "matplotlib",
     "netCDF4",
 ]
