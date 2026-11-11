@@ -298,7 +298,7 @@ def regradear_para_latlon(
         >>> print(ds_reg)
     """
 
-    with _NETCDF_LOCK, xr.open_dataset(ds_path) as ds:
+    with _NETCDF_LOCK, xr.open_dataset(ds_path, engine='netcdf4') as ds:
         roi_do_arquivo = {
             "lat_min": ds.attrs.get("roi_lat_min"),
             "lat_max": ds.attrs.get("roi_lat_max"),
@@ -328,11 +328,6 @@ def regradear_para_latlon(
     lon2d = ds_geo["longitude"].values   # (y, x)
     cmi = ds_geo["CMI"].values           # (y, x)
 
-    # Normaliza os limites com min()/max(): o resto do pipeline (ex: defaults
-    # de baixar_roi_multibanda_goes) nem sempre passa lat_min < lat_max numericamente (às vezes
-    # os nomes seguem "Norte/Sul" geográfico, não "menor/maior" matemático).
-    # Sem isso, np.arange(lat_max, lat_min, -reg_value) pode sair vazio quando
-    # os valores chegam trocados.
     lat_lo, lat_hi = min(lat_min, lat_max), max(lat_min, lat_max)
     lon_lo, lon_hi = min(lon_min, lon_max), max(lon_min, lon_max)
 
@@ -352,13 +347,11 @@ def regradear_para_latlon(
         method=reg_method,
     )
 
-    # 'linear'/'cubic' não extrapolam: pontos fora do casco convexo dos dados
-    # de entrada saem como NaN, mesmo quando existe dado físico de verdade ali
-    # perto (efeito de borda, não falta de dado real, já que o ROI está bem
-    # dentro do disco visível do satélite). Preenche só esses buracos residuais
-    # com 'nearest' (que nunca gera NaN), sem abrir mão da suavidade do
-    # método escolhido no interior da imagem.
     buracos = np.isnan(cmi_reg)
+
+    # 'linear'/'cubic' não extrapolam pontos, fora do casco convexo dos dados
+    # de entrada saem como NaN. Preenche só esses buracos residuais
+    # com 'nearest'.
     if reg_method != "nearest" and np.any(buracos):
         cmi_nearest = griddata(
             points=(lon2d[valid], lat2d[valid]),
@@ -376,8 +369,6 @@ def regradear_para_latlon(
         },
     )
 
-    # Atributos CF: sem isso, ferramentas como o Panoply não reconhecem
-    # 'lat'/'lon' como eixos geográficos de verdade (mesmo a array existindo).
     ds_reg["lat"].attrs.update(units="degrees_north", standard_name="latitude", axis="Y")
     ds_reg["lon"].attrs.update(units="degrees_east", standard_name="longitude", axis="X")
 
