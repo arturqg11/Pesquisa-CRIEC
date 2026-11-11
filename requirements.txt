@@ -5,3 +5,4 @@ xarray
 scipy
 matplotlib
 netCDF4
+cartopy
